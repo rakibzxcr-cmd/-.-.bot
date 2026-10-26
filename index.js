@@ -16,9 +16,9 @@ const path = require('path');
 const crypto = require('crypto');
 
 // ===================== CONFIG =====================
-const BOT_TOKEN = process.env.BOT_TOKEN || '8788498983:AAFzmfejkwIgCD2HsdLJ1-ZPhMfUd6J7Hso';
-const ADMIN_IDS = (process.env.ADMIN_IDS || '8370261764').split(',').map(Number);
-const WEBHOOK_URL = process.env.WEBHOOK_URL || 'https://bot-g9wu.onrender.com';
+const BOT_TOKEN = process.env.BOT_TOKEN || '8999404005:AAGbESAr8QGeTDCrGX-JooHPY7RGiat57tw';
+const ADMIN_IDS = (process.env.ADMIN_IDS || '8294558143').split(',').map(Number);
+const WEBHOOK_URL = process.env.WEBHOOK_URL || '';
 const PORT = process.env.PORT || 10000;
 const FERNET_SECRET = process.env.FERNET_SECRET || crypto.randomBytes(32).toString('hex');
 const DATA_PATH = path.join(__dirname, 'board_data.json');
