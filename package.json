@@ -1,0 +1,17 @@
+{
+  "name": "payment-receipt-bot",
+  "version": "1.0.0",
+  "description": "Multi-gateway payment bot with receipt template pipeline",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "jimp": "^0.22.12",
+    "dotenv": "^16.4.5"
+  }
+}
