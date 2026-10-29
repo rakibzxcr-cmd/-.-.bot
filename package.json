@@ -1,0 +1,17 @@
+{
+  "name": "payment-receipt-bot",
+  "version": "1.0.0",
+  "description": "HTML-to-Image Payment Bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": "18.x"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0",
+    "puppeteer": "^22.12.1"
+  }
+}
